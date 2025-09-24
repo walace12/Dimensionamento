@@ -101,7 +101,7 @@ plt.ylabel("Profundidade y (m)")
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig("graficos_esforcos_base_zero.png")
+plt.savefig("graficos_esforcos.png")
 plt.show()
 
 print("Gráficos salvos como 'graficos_esforcos.png'")
