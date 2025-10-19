@@ -1,0 +1,122 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+from scipy.optimize import fsolve
+
+# ====================================================
+# PARÂMETROS
+# ====================================================
+gamaAgua = 10      # kN/m³
+gamaConcreto = 25  # kN/m³
+poisson = 1 / 6
+Ec = 3.45 * 10**7  # kN/m²
+Ea = 2.1 * 10**8   # kN/m²
+h = 0.15           # m
+h_linha = 0.2      # m
+d = 6.65           # m
+r = d / 2          # m
+H = 4              # m
+beta = ((3 * (1 - poisson**2))**0.25) / np.sqrt(r * h)
+
+# ====================================================
+# CÁLCULO DOS VALORES DE K
+# ====================================================
+def equacao_elastico(K):
+    return (h/h_linha)*K**(3/2) + (3/(2*beta*H))*K - (3/(4*(beta*H)**3))*(1 - 1/(beta*H))
+
+K_elastico = fsolve(equacao_elastico, 0.001)[0]
+K_perfeito = 1/(2*(beta*H)**2)*(1 - 1/(beta*H))
+K_articulado = 0
+
+Ks = {
+    "Articulado": K_articulado,
+    "Engaste Elástico": K_elastico,
+    "Engaste Perfeito": K_perfeito
+}
+
+print("\n=== Valores de K calculados ===")
+for nome, valor in Ks.items():
+    print(f"{nome}: K = {valor:.6e}")
+
+# ====================================================
+# FUNÇÕES DE ESFORÇOS
+# ====================================================
+def My(y, K):
+    return gamaAgua * H**3 * np.exp(-beta*y) * (K*np.cos(beta*y) - (1/(2*(beta*H)**2))*np.sin(beta*y))
+
+def M_teta(y, K):
+    return poisson * My(y, K)
+
+def Vy(y, K):
+    return -(gamaAgua*H*np.exp(-beta*y)/(2*beta)) * (
+        np.cos(beta*y) - np.sin(beta*y) + 2*K*(beta*H)**2*(np.cos(beta*y) + np.sin(beta*y)))
+
+def N_teta(y, K):
+    return gamaAgua * r * H * ((1 - (beta*y)/(beta*H)) - np.exp(-beta*y) *
+           (np.cos(beta*y) - 2*K*(beta*H)**2 * np.exp(-beta*y) * np.sin(beta*y)))
+
+# ====================================================
+# GERAÇÃO DOS GRÁFICOS E TABELAS
+# ====================================================
+y_vals = np.linspace(0, H, 500)
+y_tab = np.arange(0, H + 0.01, 0.5)
+
+for nome, K_val in Ks.items():
+    # Calcula valores
+    My_vals = My(y_vals, K_val)
+    Mtheta_vals = M_teta(y_vals, K_val)
+    Vy_vals = Vy(y_vals, K_val)
+    N_vals = N_teta(y_vals, K_val)
+
+    # ====================================================
+    # GRÁFICOS
+    # ====================================================
+    plt.figure(figsize=(16, 10))
+    plt.suptitle(f"Distribuição dos esforços ({nome})", fontsize=14, fontweight="bold")
+
+    plt.subplot(2, 2, 1)
+    plt.plot(My_vals, y_vals, color='b', label='$M_y(y)$')
+    plt.xlabel('Momento Fletor M_y (kN·m)')
+    plt.ylabel('Altura (H) [m]')
+    plt.title('Momento Fletor M_y')
+    plt.grid(True)
+    plt.legend()
+
+    plt.subplot(2, 2, 2)
+    plt.plot(Mtheta_vals, y_vals, color='m', label='$M_θ(y)$')
+    plt.xlabel('Momento Torsor M_θ (kN·m)')
+    plt.title('Momento Torsor M_θ')
+    plt.grid(True)
+    plt.legend()
+
+    plt.subplot(2, 2, 3)
+    plt.plot(Vy_vals, y_vals, color='r', label='$V_y(y)$')
+    plt.xlabel('Esforço Cortante V_y (kN/m)')
+    plt.ylabel('Altura (H) [m]')
+    plt.title('Esforço Cortante')
+    plt.grid(True)
+    plt.legend()
+
+    plt.subplot(2, 2, 4)
+    plt.plot(N_vals, y_vals, color='g', label='$N_θ(y)$')
+    plt.xlabel('Esforço Normal N_θ (kN)')
+    plt.title('Esforço Normal')
+    plt.grid(True)
+    plt.legend()
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+
+    # ====================================================
+    # TABELA DE VALORES NUMÉRICOS
+    # ====================================================
+    tabela = pd.DataFrame({
+        'y [m]': y_tab,
+        'M_y [kN·m]': My(y_tab, K_val),
+        'M_theta [kN·m]': M_teta(y_tab, K_val),
+        'V_y [kN/m]': Vy(y_tab, K_val),
+        'N_theta [kN]': N_teta(y_tab, K_val)
+    })
+
+    print(f"\n=== Tabela de valores ({nome}) ===")
+    print(tabela.to_string(index=False))
