@@ -17,6 +17,8 @@ d = 6.65           # m
 r = d / 2          # m
 H = 4              # m
 beta = ((3 * (1 - poisson**2))**0.25) / np.sqrt(r * h)
+q_lajefundo = gamaAgua * H   # pressão da água na base (kN/m²)
+q_lajetampa = 3.7  # kN/m²
 
 # ====================================================
 # CÁLCULO DOS VALORES DE K
@@ -39,7 +41,7 @@ for nome, valor in Ks.items():
     print(f"{nome}: K = {valor:.6e}")
 
 # ====================================================
-# FUNÇÕES DE ESFORÇOS
+# FUNÇÕES DE ESFORÇOS NA PAREDE DO RESERVATÓRIO
 # ====================================================
 def My(y, K):
     return gamaAgua * H**3 * np.exp(-beta*y) * (K*np.cos(beta*y) - (1/(2*(beta*H)**2))*np.sin(beta*y))
@@ -56,7 +58,7 @@ def N_teta(y, K):
            (np.cos(beta*y) - 2*K*(beta*H)**2 * np.exp(-beta*y) * np.sin(beta*y)))
 
 # ====================================================
-# GERAÇÃO DOS GRÁFICOS E TABELAS
+# GERAÇÃO DOS GRÁFICOS E TABELAS - PAREDE
 # ====================================================
 y_vals = np.linspace(0, H, 500)
 y_tab = np.arange(0, H + 0.01, 0.5)
@@ -69,10 +71,10 @@ for nome, K_val in Ks.items():
     N_vals = N_teta(y_vals, K_val)
 
     # ====================================================
-    # GRÁFICOS
+    # GRÁFICOS DOS ESFORÇOS NA PAREDE
     # ====================================================
     plt.figure(figsize=(16, 10))
-    plt.suptitle(f"Distribuição dos esforços ({nome})", fontsize=14, fontweight="bold")
+    plt.suptitle(f"Distribuição dos esforços na parede ({nome})", fontsize=14, fontweight="bold")
 
     plt.subplot(2, 2, 1)
     plt.plot(My_vals, y_vals, color='b', label='$M_y(y)$')
@@ -108,7 +110,7 @@ for nome, K_val in Ks.items():
     plt.show()
 
     # ====================================================
-    # TABELA DE VALORES NUMÉRICOS
+    # TABELA DE VALORES NUMÉRICOS - PAREDE
     # ====================================================
     tabela = pd.DataFrame({
         'y [m]': y_tab,
@@ -118,5 +120,83 @@ for nome, K_val in Ks.items():
         'N_theta [kN]': N_teta(y_tab, K_val)
     })
 
-    print(f"\n=== Tabela de valores ({nome}) ===")
+    print(f"\n=== Tabela de valores da parede ({nome}) ===")
     print(tabela.to_string(index=False))
+
+# ====================================================
+# FUNÇÕES DE ESFORÇOS NA LAJE 
+# ====================================================
+def momentos_laje_articulada(R):
+    M_r = q_lajetampa/16 * (3 + poisson) * (R**2 - r**2)
+    M_theta = q_lajetampa/16 * ((3 + poisson)*R**2 - (1 + 3*poisson)*r**2)
+    return M_r, M_theta
+
+def momentos_laje_engastada(R):
+    M_r = q_lajetampa/16 * (r**2 * (1 + poisson) - R**2 * (3 + poisson))
+    M_theta = q_lajetampa/16 * (r**2 * (1 + poisson) - R**2 * (1 + 3*poisson))
+    return M_r, M_theta
+
+def V_laje(R):
+    return 0.5 * q_lajetampa * R 
+
+# Vetor de raios (centro → borda)
+R_vals = np.linspace(0, r, 400)
+
+# Cálculo dos momentos e cortantes
+M_r_art, M_theta_art = momentos_laje_articulada(R_vals)
+M_r_eng, M_theta_eng = momentos_laje_engastada(R_vals)
+V_vals = V_laje(R_vals)
+
+# ====================================================
+# GRÁFICOS DOS ESFORÇOS NA LAJE
+# ====================================================
+plt.figure(figsize=(18, 6))
+
+plt.subplot(1, 3, 1)
+plt.plot(R_vals, M_r_art, 'b', label='$M_r$ (Articulada)')
+plt.plot(R_vals, M_theta_art, 'r--', label='$M_θ$ (Articulada)')
+plt.title('Momentos - União Articulada')
+plt.xlabel('Raio R (m)')
+plt.ylabel('Momento (kN·m)')
+plt.grid(True)
+plt.legend()
+
+plt.subplot(1, 3, 2)
+plt.plot(R_vals, M_r_eng, 'b', label='$M_r$ (Engastada)')
+plt.plot(R_vals, M_theta_eng, 'r--', label='$M_θ$ (Engastada)')
+plt.title('Momentos - União Engastada')
+plt.xlabel('Raio R (m)')
+plt.ylabel('Momento (kN·m)')
+plt.grid(True)
+plt.legend()
+
+plt.subplot(1, 3, 3)
+plt.plot(R_vals, V_vals, 'g', label='$V(R)$')
+plt.title('Esforço Cortante na Laje')
+plt.xlabel('Raio R (m)')
+plt.ylabel('Cortante (kN)')
+plt.grid(True)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# ====================================================
+# TABELA DE VALORES NUMÉRICOS - LAJE
+# ====================================================
+R_tab = np.linspace(0, r, 10)
+M_rA, M_thetaA = momentos_laje_articulada(R_tab)
+M_rE, M_thetaE = momentos_laje_engastada(R_tab)
+V_tab = V_laje(R_tab)
+
+tabela_laje = pd.DataFrame({
+    'R [m]': R_tab,
+    'M_r (Articulada) [kN·m]': M_rA,
+    'M_θ (Articulada) [kN·m]': M_thetaA,
+    'M_r (Engastada) [kN·m]': M_rE,
+    'M_θ (Engastada) [kN·m]': M_thetaE,
+    'V (kN)': V_tab
+})
+
+print("\n=== Tabela de Momentos e Cortante na Laje (R variando de 0 a r) ===")
+print(tabela_laje.to_string(index=False))
