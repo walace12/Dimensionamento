@@ -1,0 +1,442 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import fsolve
+import pandas as pd
+
+# ====================================================
+# PARÂMETROS GERAIS
+# ====================================================
+gamaAgua = 10        # kN/m³
+gamaConcreto = 25   # kN/m³
+poisson = 1/6
+
+h = 0.15             # espessura da parede (m)
+h_linha_tampa = 0.10 # laje de tampa (m)
+h_linha = 0.20       # laje de fundo (m)
+cover = 0.05         # cobrimento (m)
+
+d = 6.65             # diâmetro do reservatório (m)
+r = d / 2
+H = 4.0              # altura da água (m)
+
+fck = 30             # MPa
+fyk = 500            # MPa
+gamma_s = 1.15
+fyd = fyk / gamma_s  # MPa
+
+rho_min = 0.0015     # 0,15%
+b = 1.0              # faixa de cálculo (m)
+
+# Conversões
+h_cm = h * 100
+b_cm = b * 100
+h_mm = h * 1000
+
+beta = ((3 * (1 - poisson**2))**0.25) / np.sqrt(r * h)
+
+q_lajefundo = gamaAgua * H   # kN/m²
+q_lajetampa = 3.7            # kN/m²
+
+# Peso próprio da laje de tampa
+q_laje_tampa_pp = gamaConcreto * h_linha_tampa
+Ny_laje_tampa_const = 0.5 * q_laje_tampa_pp * r   # kN/m
+
+# ====================================================
+# CONDIÇÕES DE APOIO – K
+# ====================================================
+def equacao_elastico(K):
+    return (h/h_linha)*K**(3/2) + (3/(2*beta*H))*K - (3/(4*(beta*H)**3))*(1 - 1/(beta*H))
+
+K_elastico = fsolve(equacao_elastico, 0.001)[0]
+K_perfeito = 1/(2*(beta*H)**2)*(1 - 1/(beta*H))
+K_articulado = 0.0
+
+Ks = {
+    "Articulado": K_articulado,
+    "Engaste Elástico": K_elastico,
+    "Engaste Perfeito": K_perfeito
+}
+
+# ====================================================
+# ESFORÇOS NA PAREDE
+# ====================================================
+def My(y, K):
+    return gamaAgua * H**3 * np.exp(-beta*y) * (
+        K*np.cos(beta*y) - (1/(2*(beta*H)**2))*np.sin(beta*y)
+    )
+
+def M_theta(y, K):
+    return poisson * My(y, K)
+
+def Vy(y, K):
+    return -(gamaAgua*H*np.exp(-beta*y)/(2*beta)) * (
+        np.cos(beta*y) - np.sin(beta*y)
+        + 2*K*(beta*H)**2*(np.cos(beta*y) + np.sin(beta*y))
+    )
+
+def N_theta(y, K):
+    return gamaAgua * r * H * (
+        1 - y/H
+        - np.exp(-beta*y)*np.cos(beta*y)
+        - 2*K*(beta*H)**2*np.exp(-beta*y)*np.sin(beta*y)
+    )
+
+def N_y(y):
+    return -gamaConcreto*h*(H-y) - Ny_laje_tampa_const - q_lajetampa
+
+# ====================================================
+# GERAÇÃO DOS GRÁFICOS E TABELAS - PAREDE
+# ====================================================
+y_vals = np.linspace(0, H, 500)
+y_tab = np.arange(0, H+0.01, 0.5)
+
+for nome, K_val in Ks.items():
+
+    My_vals = My(y_vals, K_val)
+    Mtheta_vals = M_theta(y_vals, K_val)
+    Vy_vals = Vy(y_vals, K_val)
+    Ntheta_vals = N_theta(y_vals, K_val)
+    Ny_vals = N_y(y_vals)
+
+    # ======================= GRÁFICOS ==========================
+    plt.figure(figsize=(16,12))
+    plt.suptitle(f"Distribuição dos esforços na parede ({nome})",
+                 fontsize=15, fontweight="bold")
+
+    plt.subplot(2,3,1)
+    plt.plot(My_vals, y_vals)
+    plt.title("Momento Fletor My")
+    plt.xlabel("My (kN.m/m)")
+    plt.ylabel("Altura y (m)")
+    plt.grid(True)
+
+    plt.subplot(2,3,2)
+    plt.plot(Mtheta_vals, y_vals, 'm')
+    plt.title("Momento Mθ")
+    plt.xlabel("Mθ (kN·m/m)")
+    plt.grid(True)
+
+    plt.subplot(2,3,3)
+    plt.plot(Vy_vals, y_vals, 'r')
+    plt.title("Esforço Cortante Vy")
+    plt.xlabel("Vy (kN/m)")
+    plt.grid(True)
+
+    plt.subplot(2,3,4)
+    plt.plot(Ntheta_vals, y_vals, 'g')
+    plt.title("Esforço Normal Circunferencial Nθ")
+    plt.xlabel("Nθ (kN/m)")
+    plt.grid(True)
+
+    plt.subplot(2,3,5)
+    plt.plot(Ny_vals, y_vals, 'k')
+    plt.title("Esforço Normal Vertical Ny")
+    plt.xlabel("Ny (kN/m)")
+    plt.grid(True)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
+
+    # ======================= TABELA ==========================
+    tabela = pd.DataFrame({
+        'y (m)': y_tab,
+        'My (kN·m/m)': My(y_tab, K_val),
+        'Mθ (kN·m/m)': M_theta(y_tab, K_val),
+        'Vy (kN/m)': Vy(y_tab, K_val),
+        'Nθ (kN/m)': N_theta(y_tab, K_val),
+        'Ny (kN/m)': N_y(y_tab)
+    })
+
+    print(f"\n=== Tabela de esforços na parede ({nome}) ===")
+    print(tabela.to_string(index=False))
+
+
+
+# ====================================================
+# FUNÇÕES DE ESFORÇOS NA LAJE
+# ====================================================
+def momentos_laje_articulada(R):
+    M_r = (q_lajetampa + q_laje_tampa_pp)/16 * (3 + poisson) * (r**2 - R**2)
+    M_theta = (q_lajetampa + q_laje_tampa_pp)/16 * ((3 + poisson)*r**2 - (1 + 3*poisson)*R**2)
+    return M_r, M_theta
+
+def momentos_laje_engastada(R):
+    M_r = (q_lajetampa + q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (3 + poisson)*R**2)
+    M_theta = (q_lajetampa + q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (1 + 3*poisson)*R**2)
+    return M_r, M_theta
+
+def V_laje(R):
+    return 0.5 * (q_lajetampa + q_laje_tampa_pp) * R
+
+# Vetor radial
+R_vals = np.linspace(0,r,400)
+
+M_rA, M_thetaA = momentos_laje_articulada(R_vals)
+M_rE, M_thetaE = momentos_laje_engastada(R_vals)
+V_vals = V_laje(R_vals)
+
+# ====================================================
+# GRÁFICOS LAJE
+# ====================================================
+plt.figure(figsize=(16,6))
+
+plt.subplot(1,3,1)
+plt.plot(R_vals, M_rA, label="Mr Art.")
+plt.plot(R_vals, M_thetaA, '--', label="Mθ Art.")
+plt.title("Momentos - Laje Articulada")
+plt.xlabel("R (m)")
+plt.ylabel("Momento (kN·m)")
+plt.grid(True)
+plt.legend()
+
+plt.subplot(1,3,2)
+plt.plot(R_vals, M_rE, label="Mr Eng.")
+plt.plot(R_vals, M_thetaE, '--', label="Mθ Eng.")
+plt.title("Momentos - Laje Engastada")
+plt.xlabel("R (m)")
+plt.grid(True)
+plt.legend()
+
+plt.subplot(1,3,3)
+plt.plot(R_vals, V_vals, 'k')
+plt.title("Cortante V na Laje")
+plt.xlabel("R (m)")
+plt.ylabel("V (kN/m)")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ====================================================
+# σs – TABELA 17.2 (NBR 6118)
+# ====================================================
+def sigma_s_tabela_17_2(phi):
+    if phi <= 10:
+        return 360
+    elif phi <= 12.5:
+        return 320
+    elif phi <= 16:
+        return 280
+    elif phi <= 20:
+        return 240
+    elif phi <= 25:
+        return 200
+    else:
+        return 160
+
+# ====================================================
+# DIMENSIONAMENTO – ARMADURA CIRCUNFERENCIAL
+# (ENGASTE PERFEITO)
+# ====================================================
+y_vals = np.linspace(0, H, 500)
+
+Ntheta_vals = N_theta(y_vals, K_perfeito)
+Ntheta_tracao = np.maximum(Ntheta_vals, 0)
+Ntheta_max = np.max(Ntheta_tracao)   # kN/m
+
+# ----------------------------------------------------
+# 1) ELU
+# ----------------------------------------------------
+As_elu_total = (Ntheta_max * 1.4) / (fyd / 10)   # cm²/m
+As_elu_face = As_elu_total / 2
+
+# ----------------------------------------------------
+# 2) ARMADURA MÍNIMA GEOMÉTRICA
+# ----------------------------------------------------
+Act = b_cm * h_cm
+As_rho_total = rho_min * Act
+As_rho_face = As_rho_total / 2
+
+# ====================================================
+# 3)ARMADURA MÍNIMA POR FISSURAÇÃO
+# ====================================================
+def dimensionar_armadura_circunferencial(
+    As_elu_face, As_rho_face, Act
+):
+    bitolas = [10, 12.5, 16, 20, 25, 32]
+
+    k = 0.5
+    kc = 1.0
+    fct_ef = 0.3 * fck**(2/3)
+
+    for phi in bitolas:
+        sigma_s = sigma_s_tabela_17_2(phi)
+
+        # fissuração (total → por face)
+        As_fiss_total = k * kc * fct_ef * Act / sigma_s
+        As_fiss_face = As_fiss_total / 2
+
+        # área governante por face
+        As_face = max(As_elu_face, As_rho_face, As_fiss_face)
+
+        # verificação de espaçamento
+        area_barra = np.pi * (phi/10)**2 / 4
+        espac = area_barra / As_face * 100
+
+        if espac <= 30:
+            return phi, espac, As_face, As_fiss_face, sigma_s
+
+    return None
+
+
+# ----------------------------------------------------
+# DIMENSIONAMENTO FINAL
+# ----------------------------------------------------
+phi_long, esp_long, As_face, As_fiss_face, sigma_s_usado = \
+    dimensionar_armadura_circunferencial(
+        As_elu_face, As_rho_face, Act
+    )
+
+As_total = 2 * As_face
+
+# ====================================================
+# RESULTADOS ARMADURA LONGITUDINAL
+# ====================================================
+print("\n================ DIMENSIONAMENTO DA PAREDE =================")
+print("ARMADURA CIRCUNFERENCIAL – POR FACE\n")
+
+print(f"Nθ,max = {Ntheta_max:.2f} kN/m\n")
+
+print("ÁREA DE AÇO TOTAL:")
+print(f"As ELU total        = {As_elu_total:.2f} cm²/m")
+print(f"As mín geom total   = {As_rho_total:.2f} cm²/m")
+print(f"As fiss total       = {2*As_fiss_face:.2f} cm²/m")
+print(f"As TOTAL ADOTADA    = {As_total:.2f} cm²/m\n")
+
+print("ÁREA DE AÇO POR FACE:")
+print(f"As ADOTADA / face   = {As_face:.2f} cm²/m\n")
+
+print("CONTROLE DE FISSURAÇÃO:")
+print(f"σs adotado (Tabela 17.2) = {sigma_s_usado:.0f} MPa\n")
+
+print("DETALHAMENTO:")
+print(f"Ø{phi_long} mm a cada {esp_long:.0f} cm (POR FACE)")
+print("============================================================")
+
+# ====================================================
+# DIMENSIONAMENTO – ARMADURA VERTICAL
+# FLEXÃO COMPOSTA NORMAL (My + Ny)
+# NBR 6118 – ELU
+# ====================================================
+
+# --- parâmetros da seção ---
+b_cm = 100.0            # largura da faixa (cm)
+h_cm = h * 100          # espessura da parede (cm)
+h_mm = h * 1000
+
+cover_cm = cover * 100
+phi_vert = 10.0         # bitola inicial (mm)
+phi_vert_cm = phi_vert / 10
+
+# alturas úteis
+d_cm = h_cm - cover_cm - phi_vert_cm / 2
+d_linha_cm = cover_cm + phi_vert_cm / 2
+
+# materiais
+gamma_c = 1.4
+fcd = fck / gamma_c           # MPa
+fyd = fyk / gamma_s           # MPa
+
+alpha_c = 0.85
+lambda_c = 0.8
+
+# ====================================================
+# ESFORÇOS DE CÁLCULO (ENVOLTÓRIA)
+# ====================================================
+My_vals = My(y_vals, K_perfeito)          # kN·m/m
+Ny_vals = N_y(y_vals)                     # kN/m
+
+My_neg = np.min(My_vals)                  # maior negativo (mais desfavorável)
+Md = abs(My_neg) * 100 * 1.4                   # kN·cm/m
+
+Nd = np.max(Ny_vals)* 1.4                     # kN/m (compressão máxima)
+
+
+# ====================================================
+# FLEXÃO COMPOSTA NORMAL – CÁLCULO DO BLOCO
+# ====================================================
+
+# excentricidade
+e_cm = Md / Nd
+
+# posição da resultante
+yR_cm = h_cm / 2 - e_cm
+
+# profundidade do bloco comprimido
+x_cm = Nd / (alpha_c * (fcd/10) * b_cm)
+
+# braço do concreto
+z_c_cm = h_cm / 2 - lambda_c * x_cm / 2
+
+# momento externo do concreto
+M_ext = Nd * z_c_cm   # momento externo devido à excentricidade
+
+# ====================================================
+# ARMADURA NECESSÁRIA
+# ====================================================
+
+if M_ext >= Md:
+    As_vert_calc = 0.0
+else:
+    z_s_cm = d_cm - h_cm / 2
+    As_vert_calc = (Md - M_ext) / (fyd * z_s_cm)
+
+# ====================================================
+# ARMADURA MÍNIMA (NBR 6118)
+# ====================================================
+rho_min = 0.0015
+As_min_total = rho_min * b_cm * h_cm
+
+# armadura final total
+As_vert_total = max(As_vert_calc, As_min_total)
+
+# SEMPRE POR FACE
+As_vert_face = As_vert_total / 2
+
+# ====================================================
+# SUGESTÃO DE ARMADURA VERTICAL (POR FACE)
+# ====================================================
+def sugerir_armadura_vertical(As_vert_face):
+    bitolas = [10, 12.5, 16, 20, 25]
+
+    for phi in bitolas:
+        area_barra = np.pi * (phi/10)**2 / 4   # cm²
+        espac = area_barra / As_vert_face * 100  # cm
+
+        if espac <= 30:
+            return phi, espac
+
+    # SE NENHUMA ATENDER → GOVERNA O ESPAÇAMENTO MÁXIMO
+    phi = 10
+    area_barra = np.pi * (phi/10)**2 / 4
+    espac = 25.0
+
+    return phi, espac
+
+
+phi_v, esp_v = sugerir_armadura_vertical(As_vert_face)
+
+d_util_mm = h_mm - cover*1000 - phi_v/2
+
+# ====================================================
+# RESULTADOS – ARMADURA VERTICAL
+# ====================================================
+print("\n================ DIMENSIONAMENTO – ARMADURA VERTICAL ================")
+print("Modelo: FLEXÃO COMPOSTA NORMAL (My + Ny) – ELU\n")
+
+print(f"Nd = {Nd:.2f} kN/m")
+print(f"Md = {Md/100:.2f} kN·m/m")
+print(f"Excentricidade e = {e_cm:.2f} cm\n")
+
+print("ÁREA DE AÇO TOTAL:")
+print(f"As calculada       = {As_vert_total:.2f} cm²/m")
+print(f"As mínima normativa= {As_min_total:.2f} cm²/m\n")
+
+print("ÁREA DE AÇO POR FACE:")
+print(f"As / face = {As_vert_face:.2f} cm²/m\n")
+
+print("DETALHAMENTO:")
+print(f"Ø{phi_v:.1f} mm a cada {esp_v:.1f} cm (POR FACE)")
+print("=====================================================================")
+
