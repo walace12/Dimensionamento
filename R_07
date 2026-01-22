@@ -1,0 +1,905 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import fsolve
+import pandas as pd
+
+# ====================================================
+# PARÂMETROS GERAIS
+# ====================================================
+
+print("\n=== DADOS DE ENTRADA DO RESERVATÓRIO ===\n")
+
+poisson = float(input("Coeficiente de Poisson: "))
+fck = float(input("fck (MPa): "))
+h = float(input("Espessura da parede (m): "))
+h_linha_tampa = float(input("Espessura da laje de tampa (m): "))
+h_linha = float(input("Espessura da laje de fundo (m): "))
+d = float(input("Diâmetro médio da parede do reservatório (m): "))
+H = float(input("Altura da lâmina d'água (m): "))
+
+gamaAgua = 10        # kN/m³
+gamaConcreto = 25   # kN/m³
+cover = 0.05         # cobrimento (m)
+
+r = d / 2
+
+fyk = 500            # MPa
+gamma_s = 1.15
+fyd = fyk / gamma_s  # MPa
+E_c = (0.8 + 0.2 * (fck/80)) * (5600 * np.sqrt(fck)) #MPa
+E_a = 210000  #MPa
+rho_min = 0.0015     # 0,15%
+b = 1.0              # faixa de cálculo (m)
+
+# Conversões
+h_cm = h * 100
+b_cm = b * 100
+h_mm = h * 1000
+
+beta = ((3 * (1 - poisson**2))**0.25) / np.sqrt(r * h)
+D_laje = (E_c * h_linha**3)/(12*(1-poisson**2)) #rigidez da laje de fundo
+
+# ====================================================
+# VALIDAÇÕES FÍSICAS E GEOMÉTRICAS
+# ====================================================
+
+if poisson <= 0 or poisson >= 0.5:
+    raise ValueError(
+        "Erro: o coeficiente de Poisson deve estar no intervalo 0 < ν < 0,5")
+
+if fck < 40 or fck > 50:
+    raise ValueError(
+        "Erro: o fck deve estar no intervalo 40 <= fck <= 50")
+
+if h <= 0:
+    raise ValueError("Erro: a espessura da parede deve ser maior que zero")
+
+if h_linha <= 0:
+    raise ValueError("Erro: a espessura da laje de fundo deve ser maior que zero")
+
+if d <= 0:
+    raise ValueError("Erro: o diâmetro do reservatório deve ser maior que zero")
+
+if H <= 0:
+    raise ValueError("Erro: a altura da lâmina d'água deve ser maior que zero")
+
+if H > d:
+    print(
+        "⚠️  Aviso: H > D. Verifique se a geometria do reservatório está correta.")
+
+print("\n✔ Dados de entrada validados com sucesso!\n")
+
+# ====================================================
+# VALIDAÇÕES DA TEORIA DE CASCAS
+# ====================================================
+
+betaH = beta * H
+
+print("\n=== VERIFICAÇÕES DA HIPÓTESE DE CASCA ===\n")
+
+if h <= r / 20:
+    print(f"✔ Casca delgada: h = {h:.3f} m ≤ r/20 = {r/20:.3f} m")
+else:
+    raise ValueError(
+        f"\n❌ HIPÓTESE DE CASCA DELGADA VIOLADA:\n"
+        f"   h = {h:.3f} m > r/20 = {r/20:.3f} m\n"
+        f"   → A teoria clássica de cascas NÃO é aplicável.\n"
+        f"   → Utilize teoria de placas espessas ou MEF.\n")
+
+if betaH >= 4:
+    print(f"✔ Tubo longo: β·H = {betaH:.2f} ≥ 4 (hipótese atendida)")
+else:
+    raise ValueError(
+        f"\n❌ HIPÓTESE DE TUBO LONGO VIOLADA:\n"
+        f"   β·H = {betaH:.2f} < 4\n"
+        f"   → A teoria de tubo longo NÃO é válida.\n"
+        f"   → Ajuste H, r ou h, ou utilize solução geral de casca.\n")
+
+print("\n✔ Todas as hipóteses da teoria de cascas foram atendidas.\n")
+
+q_lajefundo = gamaAgua * H   # kN/m²
+q_lajetampa = 3.7            # kN/m²
+
+q_laje_tampa_pp = gamaConcreto * h_linha_tampa
+Ny_laje_tampa_const = 0.5 * q_laje_tampa_pp * r   # kN/m
+
+q_laje_fundo_pp = gamaConcreto * h_linha
+Ny_laje_fundo_const = 0.5 * q_laje_fundo_pp * r   # kN/m
+
+
+# ====================================================
+# CONDIÇÕES DE APOIO – K
+# ====================================================
+def equacao_elastico(K):
+    return (h/h_linha)*K**(3/2) + (3/(2*beta*H))*K - (3/(4*(beta*H)**3))*(1 - 1/(beta*H))
+
+K_elastico = fsolve(equacao_elastico, 0.001)[0]
+K_perfeito = 1/(2*(beta*H)**2)*(1 - 1/(beta*H))
+K_articulado = 0.0
+
+# ====================================================
+# VINCULAÇÃO (ESCOLHA DO USUÁRIO)
+# ====================================================
+print("\n=== VINCULAÇÃO PAREDE × LAJE DE FUNDO ===")
+print("1 - Articulada")
+print("2 - Engaste Elástico")
+print("3 - Engaste Perfeito")
+
+op_vinc = int(input("Escolha o tipo de vinculação (1/2/3): "))
+
+if op_vinc == 1:
+    tipo_vinc = "Articulado"
+    K_escolhido = K_articulado
+elif op_vinc == 2:
+    tipo_vinc = "Engaste Elástico"
+    K_escolhido = K_elastico
+elif op_vinc == 3:
+    tipo_vinc = "Engaste Perfeito"
+    K_escolhido = K_perfeito
+else:
+    raise ValueError("Opção inválida de vinculação")
+
+# ====================================================
+# MOMENTO DE ENGASTAMENTO NA BORDA DA LAJE – M0(K)
+# ====================================================
+def calcular_M0(q, r, poisson, K, K_perfeito):
+
+    if K <= 0.0:
+        return 0.0
+
+    M0_max = q * r**2 / 16 * (1 + poisson)
+    K_eff = min(K, K_perfeito)
+    M0 = (K_eff / K_perfeito) * M0_max
+
+    return M0
+
+q_total_laje = q_lajefundo + q_laje_fundo_pp   # kN/m²
+
+M0 = calcular_M0(
+        q = q_total_laje,
+        r = r,
+        poisson = poisson,
+        K = K_escolhido,
+        K_perfeito = K_perfeito)
+
+print("\n=== Momento de engastamento M0 ===")
+print(f"{tipo_vinc}: M0 = {M0:.3f} kN·m/m")
+
+
+# ====================================================
+# ESFORÇOS NA PAREDE
+# ====================================================
+def My(y, K):
+    return gamaAgua * H**3 * np.exp(-beta*y) * (
+        K*np.cos(beta*y) - (1/(2*(beta*H)**2))*np.sin(beta*y))
+
+def M_theta(y, K):
+    return poisson * My(y, K)
+
+def Vy(y, K):
+    return -(gamaAgua*H*np.exp(-beta*y)/(2*beta)) * (
+        np.cos(beta*y) - np.sin(beta*y)
+        + 2*K*(beta*H)**2*(np.cos(beta*y) + np.sin(beta*y)))
+
+def N_theta(y, K):
+    return gamaAgua * r * H * (
+        1 - y/H
+        - np.exp(-beta*y)*np.cos(beta*y)
+        - 2*K*(beta*H)**2*np.exp(-beta*y)*np.sin(beta*y))
+
+def N_y(y):
+    return -gamaConcreto*h*(H-y) - Ny_laje_tampa_const - q_lajetampa
+
+
+# ====================================================
+# GERAÇÃO DOS GRÁFICOS E TABELAS - PAREDE
+# ====================================================
+y_vals = np.linspace(0, H, 500)
+y_tab = np.arange(0, H+0.01, 0.5)
+
+My_vals = My(y_vals, K_escolhido)
+Mtheta_vals = M_theta(y_vals, K_escolhido)
+Vy_vals = Vy(y_vals, K_escolhido)
+Ntheta_vals = N_theta(y_vals, K_escolhido)
+Ny_vals = N_y(y_vals)
+
+plt.figure(figsize=(16,12))
+plt.suptitle(f"Distribuição dos esforços na parede ({tipo_vinc})",
+             fontsize=15, fontweight="bold")
+
+plt.subplot(2,3,1)
+plt.plot(My_vals, y_vals)
+plt.title("Momento Fletor My")
+plt.xlabel("My (kN.m/m)")
+plt.ylabel("Altura y (m)")
+plt.grid(True)
+
+plt.subplot(2,3,2)
+plt.plot(Mtheta_vals, y_vals, 'm')
+plt.title("Momento Mθ")
+plt.xlabel("Mθ (kN·m/m)")
+plt.grid(True)
+
+plt.subplot(2,3,3)
+plt.plot(Vy_vals, y_vals, 'r')
+plt.title("Esforço Cortante Vy")
+plt.xlabel("Vy (kN/m)")
+plt.grid(True)
+
+plt.subplot(2,3,4)
+plt.plot(Ntheta_vals, y_vals, 'g')
+plt.title("Esforço Normal Circunferencial Nθ")
+plt.xlabel("Nθ (kN/m)")
+plt.grid(True)
+
+plt.subplot(2,3,5)
+plt.plot(Ny_vals, y_vals, 'k')
+plt.title("Esforço Normal Vertical Ny")
+plt.xlabel("Ny (kN/m)")
+plt.grid(True)
+
+plt.tight_layout(rect=[0, 0, 1, 0.95])
+plt.show()
+
+tabela = pd.DataFrame({
+    'y (m)': y_tab,
+    'My (kN·m/m)': My(y_tab, K_escolhido),
+    'Mθ (kN·m/m)': M_theta(y_tab, K_escolhido),
+    'Vy (kN/m)': Vy(y_tab, K_escolhido),
+    'Nθ (kN/m)': N_theta(y_tab, K_escolhido),
+    'Ny (kN/m)': N_y(y_tab)
+})
+
+print(f"\n=== Tabela de esforços na parede ({tipo_vinc}) ===")
+print(tabela.to_string(index=False))
+
+
+# ====================================================
+# FUNÇÕES DE ESFORÇOS NA LAJE DE TAMPA
+# ====================================================
+def momentos_laje_articulada(R):
+    M_r = (q_lajetampa + q_laje_tampa_pp)/16 * (3 + poisson) * (r**2 - R**2)
+    M_theta = (q_lajetampa + q_laje_tampa_pp)/16 * ((3 + poisson)*r**2 - (1 + 3*poisson)*R**2)
+    return M_r, M_theta
+
+def momentos_laje_engastada(R):
+    M_r = (q_lajetampa + q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (3 + poisson)*R**2)
+    M_theta = (q_lajetampa + q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (1 + 3*poisson)*R**2)
+    return M_r, M_theta
+
+def V_laje(R):
+    return 0.5 * (q_lajetampa + q_laje_tampa_pp) * R
+
+R_vals = np.linspace(0,r,400)
+
+M_rA, M_thetaA = momentos_laje_articulada(R_vals)
+M_rE, M_thetaE = momentos_laje_engastada(R_vals)
+V_vals = V_laje(R_vals)
+
+
+# ====================================================
+# FUNÇÕES DE ESFORÇOS NA LAJE DE FUNDO
+# ====================================================
+def momentos_laje_articulada_f(R):
+    M_r_f = (q_lajefundo + q_laje_fundo_pp)/16 * (3 + poisson) * (r**2 - R**2)
+    M_theta_f = (q_lajefundo + q_laje_fundo_pp)/16 * ((3 + poisson)*r**2 - (1 + 3*poisson)*R**2)
+    return M_r_f, M_theta_f
+
+def momentos_laje_engastada_f(R, M0):
+    M_r_f = (q_lajefundo + q_laje_fundo_pp)/16 * (3 + poisson) * (r**2 - R**2) - M0
+    M_theta_f = (q_lajefundo + q_laje_fundo_pp)/16 * ((3 + poisson)*r**2 - (1 + 3*poisson)*R**2) - M0
+    return M_r_f, M_theta_f
+
+def V_laje_f(R):
+    return 0.5 * (q_lajefundo + q_laje_fundo_pp) * R
+
+R_vals_f = np.linspace(0,r,400)
+
+if K_escolhido == 0:
+    M_r_f, M_theta_f = momentos_laje_articulada_f(R_vals_f)
+    tipo_laje_fundo = "Articulada"
+else:
+    M_r_f, M_theta_f = momentos_laje_engastada_f(R_vals_f, M0)
+    tipo_laje_fundo = "Engastada"
+
+V_vals_f = V_laje_f(R_vals_f)
+
+
+# ====================================================
+# GRÁFICOS LAJE DE TAMPA
+# ====================================================
+plt.figure(figsize=(16,6))
+
+plt.subplot(1,3,1)
+plt.plot(R_vals, M_rA, label="Mr Art.")
+plt.plot(R_vals, M_thetaA, '--', label="Mθ Art.")
+plt.title("Momentos - Laje de Tampa Articulada")
+plt.xlabel("R (m)")
+plt.ylabel("Momento (kN·m)")
+plt.grid(True)
+plt.legend()
+
+plt.subplot(1,3,3)
+plt.plot(R_vals, V_vals, 'k')
+plt.title("Cortante V na Laje de Tampa")
+plt.xlabel("R (m)")
+plt.ylabel("V (kN/m)")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# ====================================================
+# GRÁFICOS DA LAJE DE FUNDO – DEPENDENTES DE K
+# ====================================================
+plt.figure(figsize=(16,6))
+plt.suptitle(f"Laje de Fundo – {tipo_laje_fundo}", fontsize=14, fontweight="bold")
+
+plt.subplot(1,3,1)
+plt.plot(R_vals_f, M_r_f, label="Mr")
+plt.plot(R_vals_f, M_theta_f, '--', label="Mθ")
+plt.title("Momentos – Laje de fundo")
+plt.xlabel("R (m)")
+plt.ylabel("Momento (kN·m/m)")
+plt.grid(True)
+plt.legend()
+
+plt.subplot(1,3,3)
+plt.plot(R_vals_f, V_vals_f, 'k')
+plt.title("Cortante V")
+plt.xlabel("R (m)")
+plt.ylabel("V (kN/m)")
+plt.grid(True)
+
+plt.tight_layout(rect=[0, 0, 1, 0.93])
+plt.show()
+
+
+# ====================================================
+# σs – TABELA 17.2 (NBR 6118)
+# ====================================================
+def sigma_s_tabela_17_2(phi):
+    if phi <= 10:
+        return 360
+    elif phi <= 12.5:
+        return 320
+    elif phi <= 16:
+        return 280
+    elif phi <= 20:
+        return 240
+    elif phi <= 25:
+        return 200
+    else:
+        return 160
+
+# ====================================================
+# DIMENSIONAMENTO – ARMADURA CIRCUNFERENCIAL
+# ====================================================
+y_vals = np.linspace(0, H, 500)
+
+Ntheta_vals = N_theta(y_vals, K_escolhido)
+Ntheta_tracao = np.maximum(Ntheta_vals, 0)
+Ntheta_max = np.max(Ntheta_tracao)   # kN/m
+
+# ----------------------------------------------------
+# 1) ELU
+# ----------------------------------------------------
+As_elu_total = (Ntheta_max * 1.4) / (fyd / 10)   # cm²/m
+As_elu_face = As_elu_total / 2
+
+# ----------------------------------------------------
+# 2) ARMADURA MÍNIMA GEOMÉTRICA
+# ----------------------------------------------------
+Act = b_cm * h_cm
+As_rho_total = rho_min * Act
+As_rho_face = As_rho_total / 2
+
+# ====================================================
+# 3) ARMADURA MÍNIMA POR FISSURAÇÃO
+# ====================================================
+def dimensionar_armadura_circunferencial(As_elu_face, As_rho_face, Act):
+    bitolas = [10, 12.5, 16, 20, 25, 32]
+
+    k = 0.5
+    kc = 1.0
+    fct_ef = 0.3 * fck**(2/3)
+
+    for phi in bitolas:
+        sigma_s = sigma_s_tabela_17_2(phi)
+
+        As_fiss_total = k * kc * fct_ef * Act / sigma_s
+        As_fiss_face = As_fiss_total / 2
+
+        As_face = max(As_elu_face, As_rho_face, As_fiss_face)
+
+        area_barra = np.pi * (phi / 10)**2 / 4   # cm²
+        espac = area_barra / As_face * 100       # cm
+
+        if 5 <= espac <= 30:
+            return phi, espac, As_face, As_fiss_face, sigma_s
+
+    return None
+
+phi_long, esp_long, As_face, As_fiss_face, sigma_s_usado = \
+    dimensionar_armadura_circunferencial(
+        As_elu_face, As_rho_face, Act
+    )
+
+As_total = 2 * As_face
+
+print("\n================ DIMENSIONAMENTO DA PAREDE =================")
+print("ARMADURA CIRCUNFERENCIAL – POR FACE\n")
+
+print(f"Nθ,max = {Ntheta_max:.2f} kN/m\n")
+
+print("ÁREA DE AÇO TOTAL:")
+print(f"As ELU total        = {As_elu_total:.2f} cm²/m")
+print(f"As mín geom total   = {As_rho_total:.2f} cm²/m")
+print(f"As fiss total       = {2*As_fiss_face:.2f} cm²/m")
+print(f"As TOTAL ADOTADA    = {As_total:.2f} cm²/m\n")
+
+print("ÁREA DE AÇO POR FACE:")
+print(f"As ADOTADA / face   = {As_face:.2f} cm²/m\n")
+
+print("CONTROLE DE FISSURAÇÃO:")
+print(f"σs adotado (Tabela 17.2) = {sigma_s_usado:.0f} MPa\n")
+
+print("DETALHAMENTO:")
+print(f"Ø{phi_long} mm a cada {esp_long:.0f} cm (POR FACE)")
+print("============================================================")
+
+# ====================================================
+# DIMENSIONAMENTO – ARMADURA VERTICAL
+# FLEXÃO COMPOSTA NORMAL (My + Ny)
+# NBR 6118 – ELU
+# ====================================================
+
+# --- parâmetros da seção ---
+b_cm = 100.0            # largura da faixa (cm)
+h_cm = h * 100          # espessura da parede (cm)
+h_mm = h * 1000
+
+cover_cm = cover * 100
+phi_vert = 10.0         # bitola inicial (mm)
+phi_vert_cm = phi_vert / 10
+
+# alturas úteis
+d_cm = h_cm - cover_cm - phi_vert_cm / 2
+d_linha_cm = cover_cm + phi_vert_cm / 2
+
+# materiais
+gamma_c = 1.4
+fcd = fck / gamma_c           # MPa
+fyd = fyk / gamma_s           # MPa
+
+alpha_c = 0.85
+lambda_c = 0.8
+
+# ====================================================
+# ESFORÇOS DE CÁLCULO (ENVOLTÓRIA)
+# ====================================================
+My_vals = My(y_vals, K_escolhido)          # kN·m/m
+Ny_vals = N_y(y_vals)                     # kN/m
+
+My_neg = np.min(My_vals)                  # maior negativo (mais desfavorável)
+Md = abs(My_neg) * 100 * 1.4                   # kN·cm/m
+
+Nd = np.max(Ny_vals)* 1.4                     # kN/m (compressão máxima)
+
+
+# ====================================================
+# FLEXÃO COMPOSTA NORMAL – CÁLCULO DO BLOCO
+# ====================================================
+
+# excentricidade
+e_cm = Md / Nd
+
+# posição da resultante
+yR_cm = h_cm / 2 - e_cm
+
+# profundidade do bloco comprimido
+x_cm = Nd / (alpha_c * (fcd/10) * b_cm)
+
+# braço do concreto
+z_c_cm = h_cm / 2 - lambda_c * x_cm / 2
+
+# momento externo do concreto
+M_ext = Nd * z_c_cm   # momento externo devido à excentricidade
+
+# ====================================================
+# ARMADURA NECESSÁRIA
+# ====================================================
+
+if M_ext >= Md:
+    As_vert_calc = 0.0
+else:
+    z_s_cm = d_cm - h_cm / 2
+    As_vert_calc = (Md - M_ext) / (fyd/10 * z_s_cm)
+
+# ====================================================
+# ARMADURA MÍNIMA (NBR 6118)
+# ====================================================
+rho_min = 0.0015
+As_min_total = rho_min * b_cm * h_cm
+
+# armadura final total
+As_vert_total = max(As_vert_calc, As_min_total)
+
+# SEMPRE POR FACE
+As_vert_face = As_vert_total / 2
+
+# ====================================================
+# SUGESTÃO DE ARMADURA VERTICAL (POR FACE)
+# ====================================================
+def sugerir_armadura_vertical(As_vert_face):
+    bitolas = [10, 12.5, 16, 20, 25]
+
+    for phi in bitolas:
+        area_barra = np.pi * (phi/10)**2 / 4   # cm²
+        espac = area_barra / As_vert_face * 100  # cm
+
+        if 5 <= espac <= 30:
+            return phi, espac
+
+    # SE NENHUMA ATENDER → GOVERNA O ESPAÇAMENTO MÁXIMO
+    phi = 10
+    area_barra = np.pi * (phi/10)**2 / 4
+    espac = 25.0
+
+    return phi, espac
+
+
+phi_v, esp_v = sugerir_armadura_vertical(As_vert_face)
+
+d_util_mm = h_mm - cover*1000 - phi_v/2
+
+# ====================================================
+# RESULTADOS – ARMADURA VERTICAL
+# ====================================================
+print("\n================ DIMENSIONAMENTO – ARMADURA VERTICAL ================")
+print("Modelo: FLEXÃO COMPOSTA NORMAL (My + Ny) – ELU\n")
+
+print(f"Nd = {Nd:.2f} kN/m")
+print(f"Md = {Md/100:.2f} kN·m/m")
+print(f"Excentricidade e = {e_cm:.2f} cm\n")
+
+print("ÁREA DE AÇO TOTAL:")
+print(f"As calculada       = {As_vert_total:.2f} cm²/m")
+print(f"As mínima normativa= {As_min_total:.2f} cm²/m\n")
+
+print("ÁREA DE AÇO POR FACE:")
+print(f"As / face = {As_vert_face:.2f} cm²/m\n")
+
+print("DETALHAMENTO:")
+print(f"Ø{phi_v:.1f} mm a cada {esp_v:.1f} cm (POR FACE)")
+print("=====================================================================")
+
+# ====================================================
+# DIMENSIONAMENTO DA LAJE DE TAMPA – ARMADURAS POS / NEG
+# ====================================================
+
+# -------------------------------
+# 1) GEOMETRIA E ALTURA ÚTIL
+# -------------------------------
+h_laje_tampa_cm = h_linha_tampa * 100
+phi_min_tampa = 8                    # mm
+phi_min_tampa_cm = phi_min_tampa / 10
+
+d_tampa_cm = h_laje_tampa_cm - cover_cm - phi_min_tampa_cm / 2
+z_tampa_cm = 0.9 * d_tampa_cm
+
+# -------------------------------
+# 2) CARREGAMENTO TOTAL
+# -------------------------------
+q_total_tampa = q_lajetampa + q_laje_tampa_pp   # kN/m²
+
+# -------------------------------
+# 3) MOMENTOS NA LAJE (ROTULADA)
+# -------------------------------
+R_vals = np.linspace(0, r, 400)
+M_r_vals, M_theta_vals = momentos_laje_articulada(R_vals)
+
+M_pos = np.max(M_r_vals)              # kN·m/m
+M_neg = abs(M_theta_vals[-1])         # kN·m/m
+
+Msd_pos_tampa = M_pos * np.sqrt(2) * 1.4
+Msd_neg_tampa = M_neg * np.sqrt(2) * 1.4
+
+Msd_pos_tampa_cm = Msd_pos_tampa * 100
+Msd_neg_tampa_cm = Msd_neg_tampa * 100
+
+# -------------------------------
+# 4) ARMADURA POSITIVA (CENTRO)
+# -------------------------------
+As_pos_calc_tampa = Msd_pos_tampa_cm / (fyd/10 * z_tampa_cm)
+
+# -------------------------------
+# 5) ARMADURA NEGATIVA (BORDA)
+# -------------------------------
+As_neg_calc_tampa = Msd_neg_tampa_cm / (fyd/10 * z_tampa_cm)
+
+# -------------------------------
+# 6) ARMADURA MÍNIMA – NBR 6118
+# -------------------------------
+rho_min_laje_tampa = 0.0015
+As_min_tampa = rho_min_laje_tampa * b_cm * h_laje_tampa_cm
+
+As_pos_tampa = max(As_pos_calc_tampa, As_min_tampa)
+As_neg_tampa = max(As_neg_calc_tampa, As_min_tampa)
+
+# -------------------------------
+# 7) FUNÇÃO DE DETALHAMENTO
+# -------------------------------
+def sugerir_armadura_laje(As):
+    bitolas = [8, 10, 12.5, 16]
+
+    for phi in bitolas:
+        area_barra = np.pi * (phi / 10)**2 / 4   # cm²
+        espac = area_barra / As * 100             # cm
+
+        if 5 <= espac <= 20:
+            return phi, espac
+
+    return 8, 20
+
+phi_pos_tampa, esp_pos_tampa = sugerir_armadura_laje(As_pos_tampa)
+phi_neg_tampa, esp_neg_tampa = sugerir_armadura_laje(As_neg_tampa)
+
+# -------------------------------
+# 8) RESULTADOS
+# -------------------------------
+print("\n================ DIMENSIONAMENTO DA LAJE DE TAMPA ================\n")
+
+print("ARMADURA POSITIVA:")
+print(f"Msd+ = {M_pos:.2f} kN·m/m")
+print(f"As calculada   = {As_pos_calc_tampa:.2f} cm²/m")
+print(f"As adotada     = {As_pos_tampa:.2f} cm²/m")
+print(f"Detalhamento   = Ø{phi_pos_tampa} mm a cada {esp_pos_tampa:.0f} cm\n")
+
+print("ARMADURA NEGATIVA:")
+print(f"Msd- = {M_neg:.2f} kN·m/m")
+print(f"As calculada   = {As_neg_calc_tampa:.2f} cm²/m")
+print(f"As adotada     = {As_neg_tampa:.2f} cm²/m")
+print(f"Detalhamento   = Ø{phi_neg_tampa} mm a cada {esp_neg_tampa:.0f} cm\n")
+
+print("===================================================================")
+
+
+# ====================================================
+# DIMENSIONAMENTO DA LAJE DE FUNDO
+# ====================================================
+
+# -----------------------------------------------
+# GEOMETRIA
+# -----------------------------------------------
+h_laje_fundo_cm = h_linha * 100
+phi_min_fundo = 8.0
+phi_min_fundo_cm = phi_min_fundo / 10
+
+d_fundo_cm = h_laje_fundo_cm - cover_cm - phi_min_fundo_cm / 2
+z_fundo_cm = 0.9 * d_fundo_cm
+
+# -----------------------------------------------
+# ARMADURA MÍNIMA – NBR 6118
+# -----------------------------------------------
+rho_min_laje_fundo = 0.0015
+As_min_fundo = rho_min_laje_fundo * b_cm * h_laje_fundo_cm
+
+# -----------------------------------------------
+# FUNÇÃO DE DETALHAMENTO
+# -----------------------------------------------
+def detalhar_laje(As):
+    bitolas = [8, 10, 12.5, 16, 20]
+
+    for phi in bitolas:
+        area_barra = np.pi * (phi/10)**2 / 4
+        espac = area_barra / As * 100
+
+        if 5 <= espac <= 20:
+            return phi, espac
+
+    return 8, 20
+
+
+if K_escolhido == 0:
+    # LAJE ROTULADA
+    M_pos_rot = np.max(M_r_f)
+    Msd_pos_rot = 1.4 * np.sqrt(2) * M_pos_rot
+    Msd_pos_rot_cm = Msd_pos_rot * 100
+
+    As_pos_rot_calc = Msd_pos_rot_cm / (fyd/10 * z_fundo_cm)
+    As_pos_rot = max(As_pos_rot_calc, As_min_fundo)
+
+    phi_pos_rot, esp_pos_rot = detalhar_laje(As_pos_rot)
+
+    # ARMADURA NEGATIVA (rotulada é mínima)
+    As_neg_rot_calc = As_min_fundo
+    As_neg_rot = As_min_fundo
+
+    phi_neg_rot, esp_neg_rot = detalhar_laje(As_neg_rot)
+
+    print("\n============== DIMENSIONAMENTO DA LAJE DE FUNDO =================")
+    print(">>> LAJE ROTULADA <<<")
+    print("ARMADURA POSITIVA:")
+    print(f"Msd+ = {Msd_pos_rot:.2f} kN·m/m")
+    print(f"As calculada   = {As_pos_rot_calc:.2f} cm²/m")
+    print(f"As adotada     = {As_pos_rot:.2f} cm²/m")
+    print(f"Ø{phi_pos_rot} mm @ {esp_pos_rot:.0f} cm\n")
+
+    print("ARMADURA NEGATIVA:")
+    print(f"As calculada   = {As_neg_rot_calc:.2f} cm²/m")
+    print(f"As adotada     = {As_neg_rot:.2f} cm²/m")
+    print(f"Ø{phi_neg_rot} mm @ {esp_neg_rot:.0f} cm")
+    print("==========================================================")
+
+else:
+    # LAJE ENGASTADA
+    M_pos_eng = max(np.max(M_r_f), np.max(M_theta_f))
+    Msd_pos_eng = 1.4 * np.sqrt(2) * M_pos_eng
+    Msd_pos_eng_cm = Msd_pos_eng * 100
+
+    As_pos_eng_calc = Msd_pos_eng_cm / (fyd/10 * z_fundo_cm)
+    As_pos_eng = max(As_pos_eng_calc, As_min_fundo)
+    phi_pos_eng, esp_pos_eng = detalhar_laje(As_pos_eng)
+
+    M_neg_eng = max(abs(M_r_f[-1]), abs(M_theta_f[-1]))
+    Msd_neg_eng = 1.4 * M_neg_eng
+    Msd_neg_eng_cm = Msd_neg_eng * 100
+
+    As_neg_eng_calc = Msd_neg_eng_cm / (fyd/10 * z_fundo_cm)
+    As_neg_eng = max(As_neg_eng_calc, As_min_fundo)
+    phi_neg_eng, esp_neg_eng = detalhar_laje(As_neg_eng)
+
+    print("\n============== DIMENSIONAMENTO DA LAJE DE FUNDO =================")
+    print(">>> LAJE ENGASTADA <<<")
+    print("ARMADURA POSITIVA:")
+    print(f"Msd+ = {Msd_pos_eng:.2f} kN·m/m")
+    print(f"As calculada   = {As_pos_eng_calc:.2f} cm²/m")
+    print(f"As adotada     = {As_pos_eng:.2f} cm²/m")
+    print(f"Ø{phi_pos_eng} mm a cada {esp_pos_eng:.0f} cm\n")
+
+    print("ARMADURA NEGATIVA:")
+    print(f"Msd- = {Msd_neg_eng:.2f} kN·m/m")
+    print(f"As calculada   = {As_neg_eng_calc:.2f} cm²/m")
+    print(f"As adotada     = {As_neg_eng:.2f} cm²/m")
+    print(f"Ø{phi_neg_eng} mm a cada {esp_neg_eng:.0f} cm")
+    print("==========================================================")
+
+
+# ====================================================
+# CONDIÇÃO DE CONTORNO ADOTADA
+# ====================================================
+print("\n=== CONDIÇÃO DE CONTORNO ADOTADA ===")
+print(f"Parede × Laje de Fundo: {tipo_vinc}")
+
+# =========================================================
+# FUNÇÕES DE FISSURA (NBR 6118)
+# =========================================================
+
+def Wk_formula1(phi_mm, eta1, sigma_si, E_si, f_ctm):
+    return (phi_mm / (12.5 * eta1)) * (sigma_si / E_si) * ((3 * sigma_si) / f_ctm)
+
+def Wk_formula2(phi_mm, eta1, sigma_si, E_si, rho_ri):
+    return (phi_mm / (12.5 * eta1)) * (sigma_si / E_si) * (4 * rho_ri + 45)
+
+def verificar_fissura(phi_mm, sigma_si, As_cm2_m, b_cm, d_cm,
+                      eta1, E_si, f_ctm, W_lim=0.2):
+
+    rho_ri = As_cm2_m / (b_cm * d_cm)
+
+    W1 = Wk_formula1(phi_mm, eta1, sigma_si, E_si, f_ctm)
+    W2 = Wk_formula2(phi_mm, eta1, sigma_si, E_si, rho_ri)
+
+    Wk = min(W1, W2)
+    ok = Wk <= W_lim
+
+    return Wk, ok, W1, W2, rho_ri
+
+
+# =========================================================
+# PARÂMETROS COMUNS
+# =========================================================
+eta1 = 1.0
+E_si = 210000        # MPa
+W_lim = 0.2          # mm
+fct_ef = 0.3 * fck**(2/3)   # MPa
+
+
+# =========================================================
+# 1) PAREDE – ARMADURA CIRCUNFERENCIAL (Nθ)
+# =========================================================
+sigma_si_ntheta = (1.4 * Ntheta_max) / As_face   # MPa
+
+Wk_ntheta, ok_ntheta, *_ = verificar_fissura(
+    phi_long, sigma_si_ntheta, As_face,
+    b_cm, d_cm, eta1, E_si, fct_ef, W_lim
+)
+
+
+# =========================================================
+# 2) PAREDE – ARMADURA VERTICAL (My + Ny)
+# =========================================================
+sigma_si_my = Md / (As_vert_face * z_s_cm)   # MPa
+
+Wk_my, ok_my, *_ = verificar_fissura(
+    phi_v, sigma_si_my, As_vert_face,
+    b_cm, d_cm, eta1, E_si, fct_ef, W_lim
+)
+
+
+# =========================================================
+# 3) LAJE DE TAMPA – FISSURAÇÃO
+# =========================================================
+
+# Armadura positiva (centro)
+sigma_si_tampa_pos = Msd_pos_tampa_cm / (As_pos_tampa * z_tampa_cm)
+
+Wk_tampa_pos, ok_tampa_pos, *_ = verificar_fissura(
+    phi_pos_tampa, sigma_si_tampa_pos, As_pos_tampa,
+    b_cm, d_tampa_cm, eta1, E_si, fct_ef, W_lim
+)
+
+# Armadura negativa (borda)
+sigma_si_tampa_neg = Msd_neg_tampa_cm / (As_neg_tampa * z_tampa_cm)
+
+Wk_tampa_neg, ok_tampa_neg, *_ = verificar_fissura(
+    phi_neg_tampa, sigma_si_tampa_neg, As_neg_tampa,
+    b_cm, d_tampa_cm, eta1, E_si, fct_ef, W_lim
+)
+
+
+# =========================================================
+# 4) LAJE DE FUNDO – FISSURAÇÃO
+# =========================================================
+
+if K_escolhido == 0:
+    # LAJE ROTULADA
+    sigma_si_fundo_pos = Msd_pos_rot_cm / (As_pos_rot * z_fundo_cm)
+    sigma_si_fundo_neg = Msd_pos_rot_cm / (As_neg_rot * z_fundo_cm)
+
+    phi_pos_f = phi_pos_rot
+    phi_neg_f = phi_neg_rot
+    As_pos_f = As_pos_rot
+    As_neg_f = As_neg_rot
+
+else:
+    # LAJE ENGASTADA
+    sigma_si_fundo_pos = Msd_pos_eng_cm / (As_pos_eng * z_fundo_cm)
+    sigma_si_fundo_neg = Msd_neg_eng_cm / (As_neg_eng * z_fundo_cm)
+
+    phi_pos_f = phi_pos_eng
+    phi_neg_f = phi_neg_eng
+    As_pos_f = As_pos_eng
+    As_neg_f = As_neg_eng
+
+
+Wk_fundo_pos, ok_fundo_pos, *_ = verificar_fissura(
+    phi_pos_f, sigma_si_fundo_pos, As_pos_f,
+    b_cm, d_fundo_cm, eta1, E_si, fct_ef, W_lim
+)
+
+Wk_fundo_neg, ok_fundo_neg, *_ = verificar_fissura(
+    phi_neg_f, sigma_si_fundo_neg, As_neg_f,
+    b_cm, d_fundo_cm, eta1, E_si, fct_ef, W_lim
+)
+
+
+# =========================================================
+# RELATÓRIO FINAL
+# =========================================================
+print("\n================ VERIFICAÇÃO DE FISSURA =================\n")
+
+print("PAREDE:")
+print(f"  Circunferencial (Nθ): Wk = {Wk_ntheta:.3f} mm → {'OK' if ok_ntheta else 'NÃO OK'}")
+print(f"  Vertical (My):        Wk = {Wk_my:.3f} mm → {'OK' if ok_my else 'NÃO OK'}\n")
+
+print("LAJE DE TAMPA:")
+print(f"  Positiva: Wk = {Wk_tampa_pos:.3f} mm → {'OK' if ok_tampa_pos else 'NÃO OK'}")
+print(f"  Negativa: Wk = {Wk_tampa_neg:.3f} mm → {'OK' if ok_tampa_neg else 'NÃO OK'}\n")
+
+print("LAJE DE FUNDO:")
+print(f"  Positiva: Wk = {Wk_fundo_pos:.3f} mm → {'OK' if ok_fundo_pos else 'NÃO OK'}")
+print(f"  Negativa: Wk = {Wk_fundo_neg:.3f} mm → {'OK' if ok_fundo_neg else 'NÃO OK'}")
+
+print("==========================================================")
