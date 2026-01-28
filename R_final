@@ -100,7 +100,7 @@ print("\n✔ Todas as hipóteses da teoria de cascas foram atendidas.\n")
 q_lajefundo = gamaAgua * H   # kN/m²
 q_lajetampa = 1            # kN/m²
 
-q_laje_tampa_pp = gamaConcreto * h_linha_tampa
+q_laje_tampa_pp = gamaConcreto * h_linha_tampa + q_lajetampa
 Ny_laje_tampa_const = 0.5 * q_laje_tampa_pp * r   # kN/m
 
 q_laje_fundo_pp = gamaConcreto * h_linha + 1
@@ -188,7 +188,7 @@ def N_theta(y, K):
         - 2*K*(beta*H)**2*np.exp(-beta*y)*np.sin(beta*y))
 
 def N_y(y):
-    return -gamaConcreto*h*(H-y) - Ny_laje_tampa_const - q_lajetampa
+    return -gamaConcreto*h*(H-y) - Ny_laje_tampa_const
 
 
 # ====================================================
@@ -258,17 +258,17 @@ print(tabela.to_string(index=False))
 # FUNÇÕES DE ESFORÇOS NA LAJE DE TAMPA
 # ====================================================
 def momentos_laje_articulada(R):
-    M_r = (q_lajetampa + q_laje_tampa_pp)/16 * (3 + poisson) * (r**2 - R**2)
-    M_theta = (q_lajetampa + q_laje_tampa_pp)/16 * ((3 + poisson)*r**2 - (1 + 3*poisson)*R**2)
+    M_r = (q_laje_tampa_pp)/16 * (3 + poisson) * (r**2 - R**2)
+    M_theta = (q_laje_tampa_pp)/16 * ((3 + poisson)*r**2 - (1 + 3*poisson)*R**2)
     return M_r, M_theta
 
 def momentos_laje_engastada(R):
-    M_r = (q_lajetampa + q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (3 + poisson)*R**2)
-    M_theta = (q_lajetampa + q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (1 + 3*poisson)*R**2)
+    M_r = (q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (3 + poisson)*R**2)
+    M_theta = (q_laje_tampa_pp)/16 * ((1 + poisson)*r**2 - (1 + 3*poisson)*R**2)
     return M_r, M_theta
 
 def V_laje(R):
-    return 0.5 * (q_lajetampa + q_laje_tampa_pp) * R
+    return 0.5 * (q_laje_tampa_pp) * R
 
 R_vals = np.linspace(0,r,400)
 
